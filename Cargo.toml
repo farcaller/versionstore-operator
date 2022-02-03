@@ -1,0 +1,26 @@
+[package]
+name = "versionstore-operator"
+version = "0.1.0"
+edition = "2021"
+authors = ["Vladimir Pouzanov <farcaller@gmail.com>"]
+description = "A k8s operator that updates deployment pod versions based on an extenal key-value store."
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+futures = "0.3.19"
+k8s-openapi = { version = "0.14.0", features = ["v1_22"] }
+kube = { version = "0.67.0", features = ["runtime", "derive", "rustls-tls"] }
+kube-runtime = "0.67.0"
+snafu = { version = "0.7.0", features = ["futures"] }
+tokio = { version = "1.16.0", features = ["rt", "rt-multi-thread", "macros"] }
+google-cloud = { path = "./thirdparty/google-cloud-rs/google-cloud", features = ["pubsub", "storage"] }
+stream-cancel = "0.8.1"
+tonic = { version = "0.4.1" }
+serde = "1.0.136"
+serde_json = "1.0.78"
+tracing = "0.1.29"
+flexi_logger = { version = "0.22.2", features = ["trc"] }
+tracing-subscriber = { version = "0.3.7", features = ["env-filter"] }
+clap = { version = "3.0.14", features = ["derive"] }
+awaitgroup = "0.6.0"
