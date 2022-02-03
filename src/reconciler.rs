@@ -13,7 +13,7 @@ use kube_runtime::watcher;
 use serde::Deserialize;
 use snafu::{ResultExt, Snafu};
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use crate::gcs_watcher::VersionstoreUpdate;
 
@@ -121,12 +121,6 @@ impl VersionstoreResource for apps::v1::Deployment {
     }
 }
 
-pub struct Reconciler {
-    client: Client,
-    versions_receiver: mpsc::Receiver<VersionstoreUpdate>,
-    graceful_shutdown_selector: BoxFuture<'static, ()>,
-}
-
 #[derive(Debug)]
 enum StorageWorkerEvent {
     VersionstoreUpdate(VersionstoreUpdate),
@@ -136,6 +130,12 @@ enum StorageWorkerEvent {
 
 type StorageMap = BTreeMap<String, BTreeSet<SomeResource>>;
 
+pub struct Reconciler {
+    client: Client,
+    versions_receiver: mpsc::Receiver<VersionstoreUpdate>,
+    graceful_shutdown_selector: BoxFuture<'static, ()>,
+}
+
 impl Reconciler {
     pub async fn new(
         versions_receiver: mpsc::Receiver<VersionstoreUpdate>,
@@ -144,7 +144,7 @@ impl Reconciler {
         let client = Client::try_default().await.context(K8SClientSnafu)?;
 
         Ok(Reconciler {
-            client: client,
+            client,
             versions_receiver,
             graceful_shutdown_selector,
         })
@@ -228,20 +228,21 @@ impl Reconciler {
         let Reconciler {
             mut versions_receiver,
             graceful_shutdown_selector,
-            ..
+            client,
         } = self;
 
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
+        let (storage_shutdown_tx, mut storage_shutdown_rx) = mpsc::channel(1);
         let (api_shutdown_tx, api_shutdown_rx) = oneshot::channel();
+        let (storage_tx, mut storage_rx) = mpsc::channel::<StorageWorkerEvent>(1);
 
+        // wait until graceful shutdown is called and notify
         tokio::spawn(async move {
             graceful_shutdown_selector.await;
-            shutdown_tx.send(()).await.unwrap_or_default();
+            storage_shutdown_tx.send(()).await.unwrap_or_default();
             api_shutdown_tx.send(()).unwrap_or_default();
         });
 
-        let (storage_tx, mut storage_rx) = mpsc::channel::<StorageWorkerEvent>(1);
-
+        // process storage events until `storage_shutdown_rx` is called
         let storage_handle = tokio::spawn(async move {
             let deploys = Mutex::new(BTreeMap::new());
             loop {
@@ -255,13 +256,14 @@ impl Reconciler {
                             None => { return; }
                         }
                     }
-                    _  = shutdown_rx.recv() => {
+                    _  = storage_shutdown_rx.recv() => {
                         break;
                     }
                 }
             }
         });
 
+        // process versionstore channel updates. Will shut down when the pubsub watcher terminates
         let receiver_handle = tokio::spawn((|| {
             let storage_tx = storage_tx.clone();
 
@@ -281,10 +283,11 @@ impl Reconciler {
             }
         })());
 
+        // process k8s api events until `api_shutdown_rx` is called
         let api_watcher_handle = tokio::spawn((|| {
             let storage_tx = storage_tx.clone();
 
-            let deploys: Api<apps::v1::Deployment> = Api::all(self.client.clone());
+            let deploys: Api<apps::v1::Deployment> = Api::all(client.clone());
             let watch_stream =
                 watcher(deploys.clone(), ListParams::default()).take_until(api_shutdown_rx);
 

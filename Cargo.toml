@@ -3,7 +3,7 @@ name = "versionstore-operator"
 version = "0.1.0"
 edition = "2021"
 authors = ["Vladimir Pouzanov <farcaller@gmail.com>"]
-description = "A k8s operator that updates deployment pod versions based on an extenal key-value store."
+description = "A k8s operator that updates deployment pod versions based on an external key-value store"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
