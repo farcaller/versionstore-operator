@@ -14,7 +14,7 @@ repository = "https://github.com/farcaller/versionstore-operator"
 [dependencies]
 futures = "0.3.19"
 k8s-openapi = { version = "0.14.0", features = ["v1_22"] }
-kube = { version = "0.67.0", features = ["runtime", "derive", "rustls-tls"] }
+kube = { version = "0.67.0", default-features = false, features = ["client", "runtime", "derive", "rustls-tls"] }
 kube-runtime = "0.67.0"
 snafu = { version = "0.7.0", features = ["futures"] }
 tokio = { version = "1.16.1", features = ["rt", "rt-multi-thread", "macros"] }
