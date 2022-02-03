@@ -4,6 +4,7 @@
     "logspec",
     "oneshot",
     "openapi",
+    "splitn",
     "upsert",
     "versionstore"
   ]

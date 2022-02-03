@@ -2537,6 +2537,7 @@ dependencies = [
  "flexi_logger",
  "futures",
  "google-cloud",
+ "json-patch",
  "k8s-openapi",
  "kube",
  "kube-runtime",

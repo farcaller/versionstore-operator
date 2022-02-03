@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Vladimir Pouzanov <farcaller@gmail.com>"]
 description = "A k8s operator that updates deployment pod versions based on an external key-value store"
+license-file = "LICENSE"
+homepage = "https://github.com/farcaller/versionstore-operator"
+readme = "README.md"
+repository = "https://github.com/farcaller/versionstore-operator"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -24,3 +28,4 @@ flexi_logger = { version = "0.22.2", features = ["trc"] }
 tracing-subscriber = { version = "0.3.7", features = ["env-filter"] }
 clap = { version = "3.0.14", features = ["derive"] }
 awaitgroup = "0.6.0"
+json-patch = "0.2.6"

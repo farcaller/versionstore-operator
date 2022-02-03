@@ -1,18 +1,23 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::Mutex,
+    sync::Arc,
 };
 
 use futures::{
     future::{join_all, BoxFuture},
     pin_mut, StreamExt,
 };
+use json_patch::{PatchOperation, ReplaceOperation};
 use k8s_openapi::api::apps;
-use kube::{api::ListParams, Api, Client, Resource};
+use kube::{
+    api::{ListParams, Patch, PatchParams},
+    Api, Client, Resource,
+};
 use kube_runtime::watcher;
 use serde::Deserialize;
+use serde_json::Value;
 use snafu::{ResultExt, Snafu};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, error, info};
 
 use crate::gcs_watcher::VersionstoreUpdate;
@@ -130,6 +135,13 @@ enum StorageWorkerEvent {
 
 type StorageMap = BTreeMap<String, BTreeSet<SomeResource>>;
 
+#[derive(Debug)]
+struct PatchEvent {
+    patch: Patch<()>,
+    namespace: String,
+    name: String,
+}
+
 pub struct Reconciler {
     client: Client,
     versions_receiver: mpsc::Receiver<VersionstoreUpdate>,
@@ -150,7 +162,8 @@ impl Reconciler {
         })
     }
 
-    fn update_resource(deploys: &mut StorageMap, resource: SomeResource) {
+    async fn update_resource(deploys: Arc<Mutex<StorageMap>>, resource: SomeResource) {
+        let mut deploys = deploys.lock().await;
         let data = resource.0.versionstore_data();
 
         match data {
@@ -185,7 +198,8 @@ impl Reconciler {
         }
     }
 
-    fn remove_resource(deploys: &mut StorageMap, resource: SomeResource) {
+    async fn remove_resource(deploys: Arc<Mutex<StorageMap>>, resource: SomeResource) {
+        let mut deploys = deploys.lock().await;
         let data = resource.0.versionstore_data();
 
         match data {
@@ -200,27 +214,70 @@ impl Reconciler {
         }
     }
 
-    fn patch_resources(deploys: &StorageMap, v: VersionstoreUpdate) -> Option<()> {
+    async fn patch_resources(
+        deploys: Arc<Mutex<StorageMap>>,
+        tx: mpsc::Sender<PatchEvent>,
+        v: VersionstoreUpdate,
+    ) -> Option<()> {
+        let deploys = deploys.lock().await;
         let resources = deploys.get(&v.path)?;
+
         for resource in resources {
+            let image = resource
+                .0
+                .spec
+                .as_ref()?
+                .template
+                .spec
+                .as_ref()?
+                .containers
+                .get(0)?
+                .image
+                .as_ref()?;
+
+            let image_parts: Vec<&str> = image.splitn(2, ":").collect();
+
+            let new_image = format!("{}:{}", image_parts[0], v.value);
             info!(
                 "will update {} container {} to {}",
                 resource.get_key(),
                 "<unimplemented>",
-                v.value
+                new_image
             );
+
+            let patch = Patch::Json::<()>(json_patch::Patch(vec![PatchOperation::Replace(
+                ReplaceOperation {
+                    path: String::from("/spec/template/spec/containers/0/image"),
+                    value: Value::from(new_image),
+                },
+            )]));
+
+            tx.send(PatchEvent {
+                patch,
+                namespace: String::from(resource.0.meta().namespace.as_ref()?),
+                name: String::from(resource.0.meta().name.as_ref()?),
+            })
+            .await
+            .unwrap_or_default();
         }
 
         None
     }
 
-    fn process_event(deploys: &mut StorageMap, evt: StorageWorkerEvent) {
+    async fn process_event(
+        deploys: Arc<Mutex<StorageMap>>,
+        tx: mpsc::Sender<PatchEvent>,
+        evt: StorageWorkerEvent,
+    ) {
         use StorageWorkerEvent::*;
         debug!("got event {:?}", evt);
         match evt {
-            VersionstoreUpdate(vu) => Self::patch_resources(&deploys, vu).or(Some(())).unwrap(),
-            ApiResourceUpdate(r) => Self::update_resource(deploys, r),
-            ApiResourceRemove(r) => Self::remove_resource(deploys, r),
+            VersionstoreUpdate(vu) => Self::patch_resources(deploys, tx, vu)
+                .await
+                .or(Some(()))
+                .unwrap(),
+            ApiResourceUpdate(r) => Self::update_resource(deploys, r).await,
+            ApiResourceRemove(r) => Self::remove_resource(deploys, r).await,
         }
     }
 
@@ -233,7 +290,8 @@ impl Reconciler {
 
         let (storage_shutdown_tx, mut storage_shutdown_rx) = mpsc::channel(1);
         let (api_shutdown_tx, api_shutdown_rx) = oneshot::channel();
-        let (storage_tx, mut storage_rx) = mpsc::channel::<StorageWorkerEvent>(1);
+        let (storage_tx, mut storage_rx) = mpsc::channel(1);
+        let (api_patcher_tx, mut api_patcher_rx) = mpsc::channel::<PatchEvent>(1);
 
         // wait until graceful shutdown is called and notify
         tokio::spawn(async move {
@@ -244,14 +302,14 @@ impl Reconciler {
 
         // process storage events until `storage_shutdown_rx` is called
         let storage_handle = tokio::spawn(async move {
-            let deploys = Mutex::new(BTreeMap::new());
+            let deploys = Arc::new(Mutex::new(BTreeMap::new()));
+
             loop {
                 tokio::select! {
                     evt = storage_rx.recv() => {
                         match evt {
                             Some(evt) => {
-                                let deploys = &mut deploys.lock().unwrap();
-                                Self::process_event(deploys, evt)
+                                Self::process_event(deploys.clone(), api_patcher_tx.clone(), evt).await;
                             },
                             None => { return; }
                         }
@@ -332,6 +390,30 @@ impl Reconciler {
             }
         })());
 
-        join_all(vec![storage_handle, receiver_handle, api_watcher_handle]).await;
+        // process updates to k8s resources. Will shut down when api_patcher_tx goes out of scope
+        let api_patcher_handle = tokio::spawn((|| async move {
+            while let Some(patch) = api_patcher_rx.recv().await {
+                let deploys: Api<apps::v1::Deployment> =
+                    Api::namespaced(client.clone(), &patch.namespace);
+                match deploys
+                    .patch(&patch.name, &PatchParams::default(), &patch.patch)
+                    .await
+                {
+                    Err(err) => error!(
+                        "failed to update {}/{}: {}",
+                        patch.namespace, patch.name, err
+                    ),
+                    Ok(_) => info!("updated {}/{}", patch.namespace, patch.name),
+                }
+            }
+        })());
+
+        join_all(vec![
+            storage_handle,
+            receiver_handle,
+            api_watcher_handle,
+            api_patcher_handle,
+        ])
+        .await;
     }
 }
