@@ -5,6 +5,7 @@
 > **A k8s operator that updates deployment pod versions based on an external
 > key-value store**
 
+[![Crates.io](https://img.shields.io/crates/v/versionstore-operator?style=flat-square)](https://crates.io/crates/versionstore-operator)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](https://github.com/farcaller/versionstore-operator/blob/master/LICENSE)
 
 1. [About](#about)

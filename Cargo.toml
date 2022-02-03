@@ -18,7 +18,7 @@ kube = { version = "0.67.0", features = ["runtime", "derive", "rustls-tls"] }
 kube-runtime = "0.67.0"
 snafu = { version = "0.7.0", features = ["futures"] }
 tokio = { version = "1.16.0", features = ["rt", "rt-multi-thread", "macros"] }
-google-cloud = { path = "./thirdparty/google-cloud-rs/google-cloud", features = ["pubsub", "storage"] }
+google-cloud = { version = "0.2.1", path = "./thirdparty/google-cloud-rs/google-cloud", features = ["pubsub", "storage"], package = "google-cloud-for-versionstore-operator" }
 stream-cancel = "0.8.1"
 tonic = { version = "0.4.1" }
 serde = "1.0.136"

@@ -605,7 +605,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b919933a397b79c37e33b77bb2aa3dc8eb6e165ad809e58ff75bc7db2e34574"
 
 [[package]]
-name = "google-cloud"
+name = "google-cloud-for-versionstore-operator"
 version = "0.2.1"
 dependencies = [
  "chrono",
@@ -2536,7 +2536,7 @@ dependencies = [
  "clap",
  "flexi_logger",
  "futures",
- "google-cloud",
+ "google-cloud-for-versionstore-operator",
  "json-patch",
  "k8s-openapi",
  "kube",

@@ -128,7 +128,7 @@ impl GCSWatcher {
         let mut storage_client = storage::Client::new(project).await.context(GCSSetupSnafu)?;
 
         let storage_bucket = storage_client
-            .bucket(gcs_bucket.as_ref())
+            .bucket(gcs_bucket.as_ref(), true)
             .await
             .context(GCSBucketSnafu)?;
 
