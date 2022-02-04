@@ -226,45 +226,43 @@ impl Reconciler {
             let events: Vec<PatchEvent> = resources
                 .iter()
                 .filter_map(|resource| {
-                    (|| {
-                        let image = resource
-                            .0
-                            .spec
-                            .as_ref()?
-                            .template
-                            .spec
-                            .as_ref()?
-                            .containers
-                            .get(0)?
-                            .image
-                            .as_ref()?;
+                    let image = resource
+                        .0
+                        .spec
+                        .as_ref()?
+                        .template
+                        .spec
+                        .as_ref()?
+                        .containers
+                        .get(0)?
+                        .image
+                        .as_ref()?;
 
-                        let image_parts: Vec<&str> = image.splitn(2, ':').collect();
+                    let image_parts: Vec<&str> = image.splitn(2, ':').collect();
 
-                        let new_image = format!("{}:{}", image_parts[0], v.value);
-                        info!(
-                            "will update {} container {} to {}",
-                            resource.get_key(),
-                            "<unimplemented>",
-                            new_image
-                        );
+                    let new_image = format!("{}:{}", image_parts[0], v.value);
+                    info!(
+                        "will update {} container {} to {}",
+                        resource.get_key(),
+                        "<unimplemented>",
+                        new_image
+                    );
 
-                        let patch =
-                            Patch::Json::<()>(json_patch::Patch(vec![PatchOperation::Replace(
-                                ReplaceOperation {
-                                    path: String::from("/spec/template/spec/containers/0/image"),
-                                    value: Value::from(new_image),
-                                },
-                            )]));
+                    let patch =
+                        Patch::Json::<()>(json_patch::Patch(vec![PatchOperation::Replace(
+                            ReplaceOperation {
+                                path: String::from("/spec/template/spec/containers/0/image"),
+                                value: Value::from(new_image),
+                            },
+                        )]));
 
-                        let evt = PatchEvent {
-                            patch,
-                            namespace: String::from(resource.0.meta().namespace.as_ref()?),
-                            name: String::from(resource.0.meta().name.as_ref()?),
-                        };
+                    let evt = PatchEvent {
+                        patch,
+                        namespace: String::from(resource.0.meta().namespace.as_ref()?),
+                        name: String::from(resource.0.meta().name.as_ref()?),
+                    };
 
-                        Some(evt)
-                    })()
+                    Some(evt)
                 })
                 .collect();
 

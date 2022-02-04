@@ -172,40 +172,37 @@ impl GCSWatcher {
         loop {
             tokio::select! {
                 message = subscription.receive() => {
-                    tokio::spawn((|| {
-                        // TODO: can we not use spawn so the bucket doesn't need to move?
-                        let mut bucket = storage_bucket.clone();
-                        let worker = wg.worker();
-                        let versions_sender = versions_sender.clone();
+                    let mut bucket = storage_bucket.clone();
+                    let worker = wg.worker();
+                    let versions_sender = versions_sender.clone();
 
-                        async move {
-                            let mut message = unwrap_or_err!(message.ok_or(Error::PubSubRecv {}));
-                            unwrap_or_err!(message.ack().await.context(AckSnafu));
-                            let json = unwrap_or_err!(str::from_utf8(message.data()).context(Utf8Snafu));
-                            // TODO: dedup messages on bucket/name
-                            let storage_message: StorageMessage =
-                                unwrap_or_err!(serde_json::from_str(json).context(JsonSnafu));
-                            if storage_message.bucket != bucket.name() {
-                                warn!("received a notification for bucket {} while expecting bucket {}", bucket.name(), storage_message.bucket);
-                                return;
-                            }
-                            let mut obj = unwrap_or_err!(bucket
-                                .object(&storage_message.name)
-                                .await
-                                .context(GCSObjectSnafu));
-
-                            let data = unwrap_or_err!(obj.get().await.context(GCSObjectReadSnafu));
-                            let value = unwrap_or_err!(String::from_utf8(data).context(FromUtf8Snafu));
-
-                            let update = VersionstoreUpdate {
-                                path: storage_message.name,
-                                value,
-                            };
-                            unwrap_or_err!(versions_sender.send(update).await);
-
-                            worker.done();
+                    tokio::spawn(async move {
+                        let mut message = unwrap_or_err!(message.ok_or(Error::PubSubRecv {}));
+                        unwrap_or_err!(message.ack().await.context(AckSnafu));
+                        let json = unwrap_or_err!(str::from_utf8(message.data()).context(Utf8Snafu));
+                        // TODO: dedup messages on bucket/name
+                        let storage_message: StorageMessage =
+                            unwrap_or_err!(serde_json::from_str(json).context(JsonSnafu));
+                        if storage_message.bucket != bucket.name() {
+                            warn!("received a notification for bucket {} while expecting bucket {}", bucket.name(), storage_message.bucket);
+                            return;
                         }
-                    })());
+                        let mut obj = unwrap_or_err!(bucket
+                            .object(&storage_message.name)
+                            .await
+                            .context(GCSObjectSnafu));
+
+                        let data = unwrap_or_err!(obj.get().await.context(GCSObjectReadSnafu));
+                        let value = unwrap_or_err!(String::from_utf8(data).context(FromUtf8Snafu));
+
+                        let update = VersionstoreUpdate {
+                            path: storage_message.name,
+                            value,
+                        };
+                        unwrap_or_err!(versions_sender.send(update).await);
+
+                        worker.done();
+                    });
                 }
                 _  = rx.recv() => {
                     break;
