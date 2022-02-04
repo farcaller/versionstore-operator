@@ -22,7 +22,7 @@ use tracing::{debug, error, info};
 
 use crate::gcs_watcher::VersionstoreUpdate;
 
-static VERSIONSTORE_ANNOTATION: &'static str = "versionstore-operator.prod.zone/managed";
+static VERSIONSTORE_ANNOTATION: &str = "versionstore-operator.prod.zone/managed";
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -239,7 +239,7 @@ impl Reconciler {
                             .image
                             .as_ref()?;
 
-                        let image_parts: Vec<&str> = image.splitn(2, ":").collect();
+                        let image_parts: Vec<&str> = image.splitn(2, ':').collect();
 
                         let new_image = format!("{}:{}", image_parts[0], v.value);
                         info!(
@@ -335,40 +335,42 @@ impl Reconciler {
         });
 
         // process versionstore channel updates. Will shut down when the pubsub watcher terminates
-        let receiver_handle = tokio::spawn((|| {
-            let storage_tx = storage_tx.clone();
+        let storage_tx2 = storage_tx.clone();
+        let receiver_handle = tokio::spawn(async move {
+            loop {
+                let version = versions_receiver.recv().await;
+                match version {
+                    Some(vu) => {
+                        storage_tx2
+                            .send(StorageWorkerEvent::VersionstoreUpdate(vu))
+                            .await
+                            .unwrap_or_default();
+                    }
+                    None => break,
+                }
+            }
+        });
 
-            async move {
-                loop {
-                    let version = versions_receiver.recv().await;
-                    match version {
-                        Some(vu) => {
+        // process k8s api events until `api_shutdown_rx` is called
+        let deploys: Api<apps::v1::Deployment> = Api::all(client.clone());
+        let watch_stream =
+            watcher(deploys.clone(), ListParams::default()).take_until(api_shutdown_rx);
+        let api_watcher_handle = tokio::spawn(async move {
+            pin_mut!(watch_stream);
+
+            while let Some(evt) = watch_stream.next().await {
+                match evt {
+                    Ok(evt) => match evt {
+                        watcher::Event::Applied(deployment) => {
                             storage_tx
-                                .send(StorageWorkerEvent::VersionstoreUpdate(vu))
+                                .send(StorageWorkerEvent::ApiResourceUpdate(SomeResource::from(
+                                    deployment,
+                                )))
                                 .await
                                 .unwrap_or_default();
                         }
-                        None => break,
-                    }
-                }
-            }
-        })());
-
-        // process k8s api events until `api_shutdown_rx` is called
-        let api_watcher_handle = tokio::spawn((|| {
-            let storage_tx = storage_tx.clone();
-
-            let deploys: Api<apps::v1::Deployment> = Api::all(client.clone());
-            let watch_stream =
-                watcher(deploys.clone(), ListParams::default()).take_until(api_shutdown_rx);
-
-            async move {
-                pin_mut!(watch_stream);
-
-                while let Some(evt) = watch_stream.next().await {
-                    match evt {
-                        Ok(evt) => match evt {
-                            watcher::Event::Applied(deployment) => {
+                        watcher::Event::Restarted(deployments) => {
+                            for deployment in deployments {
                                 storage_tx
                                     .send(StorageWorkerEvent::ApiResourceUpdate(
                                         SomeResource::from(deployment),
@@ -376,35 +378,25 @@ impl Reconciler {
                                     .await
                                     .unwrap_or_default();
                             }
-                            watcher::Event::Restarted(deployments) => {
-                                for deployment in deployments {
-                                    storage_tx
-                                        .send(StorageWorkerEvent::ApiResourceUpdate(
-                                            SomeResource::from(deployment),
-                                        ))
-                                        .await
-                                        .unwrap_or_default();
-                                }
-                            }
-                            watcher::Event::Deleted(deployment) => {
-                                storage_tx
-                                    .send(StorageWorkerEvent::ApiResourceRemove(
-                                        SomeResource::from(deployment),
-                                    ))
-                                    .await
-                                    .unwrap_or_default();
-                            }
-                        },
-                        Err(er) => {
-                            eprintln!("watcher error: {}", er);
                         }
+                        watcher::Event::Deleted(deployment) => {
+                            storage_tx
+                                .send(StorageWorkerEvent::ApiResourceRemove(SomeResource::from(
+                                    deployment,
+                                )))
+                                .await
+                                .unwrap_or_default();
+                        }
+                    },
+                    Err(er) => {
+                        eprintln!("watcher error: {}", er);
                     }
                 }
             }
-        })());
+        });
 
         // process updates to k8s resources. Will shut down when api_patcher_tx goes out of scope
-        let api_patcher_handle = tokio::spawn((|| async move {
+        let api_patcher_handle = tokio::spawn(async move {
             while let Some(patch) = api_patcher_rx.recv().await {
                 let deploys: Api<apps::v1::Deployment> =
                     Api::namespaced(client.clone(), &patch.namespace);
@@ -419,7 +411,7 @@ impl Reconciler {
                     Ok(_) => info!("updated {}/{}", patch.namespace, patch.name),
                 }
             }
-        })());
+        });
 
         join_all(vec![
             storage_handle,

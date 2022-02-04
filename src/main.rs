@@ -50,7 +50,7 @@ fn setup_logging() -> Result<(), Whatever> {
     let initial_logspec = LogSpecification::env().unwrap();
 
     let subscriber_builder = FmtSubscriber::builder()
-        .with_env_filter(LogSpecAsFilter(initial_logspec.clone()))
+        .with_env_filter(LogSpecAsFilter(initial_logspec))
         .with_filter_reloading();
     tracing::subscriber::set_global_default(subscriber_builder.finish())
         .with_whatever_context(|e| format!("error setting logger: {}", e))?;

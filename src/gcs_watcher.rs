@@ -199,7 +199,7 @@ impl GCSWatcher {
 
                             let update = VersionstoreUpdate {
                                 path: storage_message.name,
-                                value: value,
+                                value,
                             };
                             unwrap_or_err!(versions_sender.send(update).await);
 
