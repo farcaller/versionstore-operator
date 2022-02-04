@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use futures::{
@@ -17,7 +17,7 @@ use kube_runtime::watcher;
 use serde::Deserialize;
 use serde_json::Value;
 use snafu::{ResultExt, Snafu};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info};
 
 use crate::gcs_watcher::VersionstoreUpdate;
@@ -162,8 +162,8 @@ impl Reconciler {
         })
     }
 
-    async fn update_resource(deploys: Arc<Mutex<StorageMap>>, resource: SomeResource) {
-        let mut deploys = deploys.lock().await;
+    fn update_resource(deploys: Arc<Mutex<StorageMap>>, resource: SomeResource) {
+        let mut deploys = deploys.lock().unwrap();
         let data = resource.0.versionstore_data();
 
         match data {
@@ -198,8 +198,8 @@ impl Reconciler {
         }
     }
 
-    async fn remove_resource(deploys: Arc<Mutex<StorageMap>>, resource: SomeResource) {
-        let mut deploys = deploys.lock().await;
+    fn remove_resource(deploys: Arc<Mutex<StorageMap>>, resource: SomeResource) {
+        let mut deploys = deploys.lock().unwrap();
         let data = resource.0.versionstore_data();
 
         match data {
@@ -219,46 +219,60 @@ impl Reconciler {
         tx: mpsc::Sender<PatchEvent>,
         v: VersionstoreUpdate,
     ) -> Option<()> {
-        let deploys = deploys.lock().await;
-        let resources = deploys.get(&v.path)?;
+        let patch_events = {
+            let deploys = deploys.lock().unwrap();
+            let resources = deploys.get(&v.path)?;
 
-        for resource in resources {
-            let image = resource
-                .0
-                .spec
-                .as_ref()?
-                .template
-                .spec
-                .as_ref()?
-                .containers
-                .get(0)?
-                .image
-                .as_ref()?;
+            let events: Vec<PatchEvent> = resources
+                .iter()
+                .filter_map(|resource| {
+                    (|| {
+                        let image = resource
+                            .0
+                            .spec
+                            .as_ref()?
+                            .template
+                            .spec
+                            .as_ref()?
+                            .containers
+                            .get(0)?
+                            .image
+                            .as_ref()?;
 
-            let image_parts: Vec<&str> = image.splitn(2, ":").collect();
+                        let image_parts: Vec<&str> = image.splitn(2, ":").collect();
 
-            let new_image = format!("{}:{}", image_parts[0], v.value);
-            info!(
-                "will update {} container {} to {}",
-                resource.get_key(),
-                "<unimplemented>",
-                new_image
-            );
+                        let new_image = format!("{}:{}", image_parts[0], v.value);
+                        info!(
+                            "will update {} container {} to {}",
+                            resource.get_key(),
+                            "<unimplemented>",
+                            new_image
+                        );
 
-            let patch = Patch::Json::<()>(json_patch::Patch(vec![PatchOperation::Replace(
-                ReplaceOperation {
-                    path: String::from("/spec/template/spec/containers/0/image"),
-                    value: Value::from(new_image),
-                },
-            )]));
+                        let patch =
+                            Patch::Json::<()>(json_patch::Patch(vec![PatchOperation::Replace(
+                                ReplaceOperation {
+                                    path: String::from("/spec/template/spec/containers/0/image"),
+                                    value: Value::from(new_image),
+                                },
+                            )]));
 
-            tx.send(PatchEvent {
-                patch,
-                namespace: String::from(resource.0.meta().namespace.as_ref()?),
-                name: String::from(resource.0.meta().name.as_ref()?),
-            })
-            .await
-            .unwrap_or_default();
+                        let evt = PatchEvent {
+                            patch,
+                            namespace: String::from(resource.0.meta().namespace.as_ref()?),
+                            name: String::from(resource.0.meta().name.as_ref()?),
+                        };
+
+                        Some(evt)
+                    })()
+                })
+                .collect();
+
+            events
+        };
+
+        for evt in patch_events {
+            tx.send(evt).await.unwrap_or_default();
         }
 
         None
@@ -276,8 +290,8 @@ impl Reconciler {
                 .await
                 .or(Some(()))
                 .unwrap(),
-            ApiResourceUpdate(r) => Self::update_resource(deploys, r).await,
-            ApiResourceRemove(r) => Self::remove_resource(deploys, r).await,
+            ApiResourceUpdate(r) => Self::update_resource(deploys, r),
+            ApiResourceRemove(r) => Self::remove_resource(deploys, r),
         }
     }
 
@@ -307,11 +321,10 @@ impl Reconciler {
             loop {
                 tokio::select! {
                     evt = storage_rx.recv() => {
-                        match evt {
-                            Some(evt) => {
-                                Self::process_event(deploys.clone(), api_patcher_tx.clone(), evt).await;
-                            },
-                            None => { return; }
+                        if let Some(evt) = evt {
+                            Self::process_event(deploys.clone(), api_patcher_tx.clone(), evt).await;
+                        } else {
+                            break;
                         }
                     }
                     _  = storage_shutdown_rx.recv() => {
